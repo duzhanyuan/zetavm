@@ -376,38 +376,6 @@ Value call(Object fun, ValueVec args)
             }
             break;
 
-            case LT_I64:
-            {
-                auto arg1 = popInt64();
-                auto arg0 = popInt64();
-                pushBool(arg0 < arg1);
-            }
-            break;
-
-            case LE_I64:
-            {
-                auto arg1 = popInt64();
-                auto arg0 = popInt64();
-                pushBool(arg0 <= arg1);
-            }
-            break;
-
-            case GT_I64:
-            {
-                auto arg1 = popInt64();
-                auto arg0 = popInt64();
-                pushBool(arg0 > arg1);
-            }
-            break;
-
-            case GE_I64:
-            {
-                auto arg1 = popInt64();
-                auto arg0 = popInt64();
-                pushBool(arg0 >= arg1);
-            }
-            break;
-
             case EQ_I64:
             {
                 auto arg1 = popInt64();
@@ -1012,6 +980,12 @@ void compile(BlockVersion* version)
             continue;
         }
 
+        if (op == "lt_i64")
+        {
+            writeCode(LT_I64);
+            continue;
+        }
+
         if (op == "gt_i64")
         {
             writeCode(GT_I64);
@@ -1095,6 +1069,15 @@ Value execCode()
                 auto arg1 = popVal();
                 auto arg0 = popVal();
                 pushVal((int64_t)arg0 - (int64_t)arg1);
+            }
+            break;
+
+            case LT_I64:
+            {
+                auto arg1 = popVal();
+                auto arg0 = popVal();
+                auto boolVal = (int64_t)arg0 < (int64_t)arg1;
+                pushVal(boolVal? Value::TRUE : Value::FALSE);
             }
             break;
 
