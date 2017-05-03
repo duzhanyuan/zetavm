@@ -308,22 +308,6 @@ Value call(Object fun, ValueVec args)
             }
             break;
 
-            case PUSH:
-            {
-                static ICache icache("val");
-                auto val = icache.getField(instr);
-                stack.push_back(val);
-            }
-            break;
-
-            case POP:
-            {
-                if (stack.empty())
-                    throw RunError("pop failed, stack empty");
-                stack.pop_back();
-            }
-            break;
-
             // Duplicate the top of the stack
             case DUP:
             {
@@ -345,34 +329,6 @@ Value call(Object fun, ValueVec args)
                 auto v1 = popVal();
                 stack.push_back(v0);
                 stack.push_back(v1);
-            }
-            break;
-
-            //
-            // 64-bit integer operations
-            //
-
-            case ADD_I64:
-            {
-                auto arg1 = popInt64();
-                auto arg0 = popInt64();
-                stack.push_back(arg0 + arg1);
-            }
-            break;
-
-            case SUB_I64:
-            {
-                auto arg1 = popInt64();
-                auto arg0 = popInt64();
-                stack.push_back(arg0 - arg1);
-            }
-            break;
-
-            case MUL_I64:
-            {
-                auto arg1 = popInt64();
-                auto arg0 = popInt64();
-                stack.push_back(arg0 * arg1);
             }
             break;
 
@@ -846,7 +802,7 @@ Value* stackLimit = nullptr;
 Value* stackBottom = nullptr;
 
 /// Stack frame base pointer
-Value* basePtr = nullptr;
+Value* framePtr = nullptr;
 
 /// Current temp stack top pointer
 Value* stackPtr = nullptr;
@@ -900,7 +856,7 @@ void initInterp()
     // Allocate the stack
     stackSize = STACK_INIT_SIZE;
     stackLimit = new Value[STACK_INIT_SIZE];
-    stackBottom = stackLimit + sizeof(Word);
+    stackBottom = stackLimit + STACK_INIT_SIZE;
     stackPtr = stackBottom;
 }
 
@@ -974,9 +930,30 @@ void compile(BlockVersion* version)
             continue;
         }
 
+        if (op == "get_local")
+        {
+            static ICache idxIC("idx");
+            auto idx = (uint16_t)idxIC.getInt64(instr);
+            writeCode(GET_LOCAL);
+            writeCode(idx);
+            continue;
+        }
+
+        if (op == "add_i64")
+        {
+            writeCode(ADD_I64);
+            continue;
+        }
+
         if (op == "sub_i64")
         {
             writeCode(SUB_I64);
+            continue;
+        }
+
+        if (op == "mul_i64")
+        {
+            writeCode(MUL_I64);
             continue;
         }
 
@@ -1022,6 +999,20 @@ void compile(BlockVersion* version)
             continue;
         }
 
+        if (op == "call")
+        {
+            static ICache retToCache("ret_to");
+            auto retToBB = retToCache.getObj(instr);
+            static ICache numArgsCache("num_args");
+            auto numArgs = (int16_t)numArgsCache.getInt64(instr);
+
+            writeCode(CALL);
+            writeCode(numArgs);
+            writeCode(retToBB);
+
+            continue;
+        }
+
         if (op == "ret")
         {
             writeCode(RET);
@@ -1044,6 +1035,8 @@ Value execCode()
     // For each instruction to execute
     for (;;)
     {
+        //std::cout << "instr" << std::endl;
+
         auto& op = readCode<Opcode>();
 
         switch (op)
@@ -1064,11 +1057,29 @@ Value execCode()
             }
             break;
 
+            case GET_LOCAL:
+            {
+                // Read the index of the value to push
+                auto idx = readCode<uint16_t>();
+                assert (stackPtr > stackLimit);
+                auto val = framePtr[idx];
+                pushVal(val);
+            }
+            break;
+
             case SUB_I64:
             {
                 auto arg1 = popVal();
                 auto arg0 = popVal();
                 pushVal((int64_t)arg0 - (int64_t)arg1);
+            }
+            break;
+
+            case MUL_I64:
+            {
+                auto arg1 = popVal();
+                auto arg0 = popVal();
+                pushVal((int64_t)arg0 * (int64_t)arg1);
             }
             break;
 
@@ -1159,27 +1170,126 @@ Value execCode()
             }
             break;
 
-            case RET:
+            // Regular function call
+            case CALL:
             {
-                // TODO:
-                // Get the caller function, base pointer adjustment
+                auto numArgs = readCode<uint16_t>();
+                auto retToBB = readCode<Object>();
 
-                // Get the return address
-                auto retAddrVal = basePtr[1];
-                auto retAddr = retAddrVal.getWord().ptr;
+                auto callee = popVal();
 
-                // Pop the return value
-                auto val = popVal();
-
-                // If this is a top-level return
-                if (retAddr == nullptr)
+                // FIXME
+                /*
+                if (stack.size() < numArgs)
                 {
-                    return val;
+                    throw RunError(
+                        "stack underflow at call"
+                    );
+                }
+                */
+
+                if (callee.isObject())
+                {
+
+                }
+                else if (callee.isHostFn())
+                {
+                    // FIXME
+                    assert (false && "hostn call");
                 }
                 else
                 {
-                    // TODO
-                    assert (false);
+                  throw RunError("invalid callee at call site");
+                }
+
+                // Get a version for the call continuation block
+                auto retVer = getBlockVersion(retToBB);
+
+                // Get a version for the function entry block
+                static ICache entryIC("entry");
+                auto entryBB = entryIC.getObj(callee);
+                auto entryVer = getBlockVersion(entryBB);
+
+                if (!entryVer->startPtr)
+                {
+                    std::cout << "compiling function entry block" << std::endl;
+                    compile(entryVer);
+                }
+
+                static ICache localsIC("num_locals");
+                auto numLocals = localsIC.getInt64(callee);
+
+                // Compute the stack pointer to restore after the call
+                auto prevStackPtr = stackPtr + numArgs;
+
+                // Save the current frame pointer
+                auto prevFramePtr = framePtr;
+
+                // Point the frame pointer to the first argument
+                framePtr = stackPtr + numArgs - 1;
+                stackPtr = framePtr - numLocals;
+                assert (stackPtr > stackLimit);
+                assert (stackPtr <= framePtr);
+
+                pushVal(Value((refptr)prevStackPtr, TAG_RAWPTR));
+                pushVal(Value((refptr)prevFramePtr, TAG_RAWPTR));
+                pushVal(Value((refptr)retVer, TAG_RAWPTR));
+
+                // Jump to the entry block of the function
+                instrPtr = entryVer->startPtr;
+            }
+            break;
+
+            case RET:
+            {
+                // Pop the return value
+                auto retVal = popVal();
+
+                // Pop the return address
+                auto retVer = (BlockVersion*)popVal().getWord().ptr;
+                //assert (retAddr.getTag() == TAG_RAWPTR);
+
+                // TODO: figure out callee identity from version,
+                // caller identity from return address
+                //
+                // We want args to have been consumed
+                // We pop all our locals (or the caller does)
+                //
+                // The thing is... The caller can't pop our locals,
+                // because the call continuation doesn't know
+
+                // Pop the previous frame pointer
+                auto prevFramePtr = popVal().getWord().ptr;
+                //assert (prevFramePtr.getTag() == TAG_RAWPTR);
+
+                // Pop the previous stack pointer
+                auto prevStackPtr = popVal().getWord().ptr;
+                //assert (prevStackPtr.getTag() == TAG_RAWPTR);
+
+                // Restore the previous frame pointer
+                framePtr = (Value*)prevFramePtr;
+
+                // Restore the stack pointer
+                stackPtr = (Value*)prevStackPtr;
+
+                // If this is a top-level return
+                if (retVer == nullptr)
+                {
+                    std::cout << "top-level return" << std::endl;
+
+                    return retVal;
+                }
+                else
+                {
+                    pushVal(retVal);
+
+                    if (!retVer->startPtr)
+                    {
+                        std::cout << "compiling call continuation" << std::endl;
+                        compile(retVer);
+                    }
+
+                    instrPtr = retVer->startPtr;
                 }
             }
             break;
@@ -1205,26 +1315,24 @@ Value callFun(Object fun, ValueVec args)
 
     std::cout << "pushing RA" << std::endl;
 
-    // Push the caller function and return address
-    // Note: these are placeholders because we are doing a toplevel call
+    // Initialize the frame pointer (used to access locals)
     assert (stackPtr == stackBottom);
-    pushVal(Value(0));
-    pushVal(Value(nullptr, TAG_RETADDR));
-
-    // Initialize the base pointer (used to access locals)
-    basePtr = stackPtr - 1;
+    framePtr = stackPtr - 1;
 
     // Push space for the local variables
     stackPtr -= numLocals;
     assert (stackPtr >= stackLimit);
 
-    std::cout << "pushing locals" << std::endl;
+    // Push the previous stack pointer, previous frame pointer and return address
+    pushVal(Value((refptr)stackPtr, TAG_RAWPTR));
+    pushVal(Value((refptr)framePtr, TAG_RAWPTR));
+    pushVal(Value(nullptr, TAG_RAWPTR));
 
     // Copy the arguments into the locals
     for (size_t i = 0; i < args.size(); ++i)
     {
         //std::cout << "  " << args[i].toString() << std::endl;
-        basePtr[i] = args[i];
+        framePtr[i] = args[i];
     }
 
     // Get the function entry block
@@ -1242,11 +1350,6 @@ Value callFun(Object fun, ValueVec args)
     // Begin execution at the entry block
     instrPtr = entryVer->startPtr;
     auto retVal = execCode();
-
-    // Pop the local variables, return address and calling function
-    stackPtr += numLocals;
-    stackPtr += 2;
-    assert (stackPtr == stackBottom);
 
     return retVal;
 }
@@ -1280,6 +1383,6 @@ void testInterp()
     assert (testRunImage("tests/vm/ex_ret_cst.zim") == Value(777));
     assert (testRunImage("tests/vm/ex_loop_cnt.zim") == Value(0));
     //assert (testRunImage("tests/vm/ex_image.zim") == Value(10));
-    //assert (testRunImage("tests/vm/ex_rec_fact.zim") == Value(5040));
+    assert (testRunImage("tests/vm/ex_rec_fact.zim") == Value(5040));
     //assert (testRunImage("tests/vm/ex_fibonacci.zim") == Value(377));
 }
