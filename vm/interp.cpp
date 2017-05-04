@@ -141,608 +141,6 @@ enum Opcode : uint16_t
     ABORT
 };
 
-/// Total count of instructions executed
-size_t cycleCount = 0;
-
-/// Cache of all possible one-character string values
-Value charStrings[256];
-
-/*
-Value call(Object fun, ValueVec args)
-{
-    static ICache numParamsIC("num_params");
-    static ICache numLocalsIC("num_locals");
-    auto numParams = numParamsIC.getInt64(fun);
-    auto numLocals = numLocalsIC.getInt64(fun);
-    assert (args.size() <= numParams);
-    assert (numParams <= numLocals);
-
-    ValueVec locals;
-    locals.resize(numLocals, Value::UNDEF);
-
-    // Copy the arguments into the locals
-    for (size_t i = 0; i < args.size(); ++i)
-    {
-        //std::cout << "  " << args[i].toString() << std::endl;
-        locals[i] = args[i];
-    }
-
-    // Temporary value stack
-    ValueVec stack;
-
-    // Array of instructions to execute
-    Value instrs;
-
-    // Number of instructions in the current block
-    size_t numInstrs = 0;
-
-    // Index of the next instruction to execute
-    size_t instrIdx = 0;
-
-    auto popVal = [&stack]()
-    {
-        if (stack.empty())
-            throw RunError("op cannot pop value, stack empty");
-        auto val = stack.back();
-        stack.pop_back();
-        return val;
-    };
-
-    auto popBool = [&popVal]()
-    {
-        auto val = popVal();
-        if (!val.isBool())
-            throw RunError("op expects boolean value");
-        return (bool)val;
-    };
-
-    auto popInt64 = [&popVal]()
-    {
-        auto val = popVal();
-        if (!val.isInt64())
-            throw RunError("op expects int64 value");
-        return (int64_t)val;
-    };
-
-    auto popStr = [&popVal]()
-    {
-        auto val = popVal();
-        if (!val.isString())
-            throw RunError("op expects string value");
-        return String(val);
-    };
-
-    auto popArray = [&popVal]()
-    {
-        auto val = popVal();
-        if (!val.isArray())
-            throw RunError("op expects array value");
-        return Array(val);
-    };
-
-    auto popObj = [&popVal]()
-    {
-        auto val = popVal();
-        assert (val.isObject());
-        return Object(val);
-    };
-
-    auto pushBool = [&stack](bool val)
-    {
-        stack.push_back(val? Value::TRUE:Value::FALSE);
-    };
-
-    auto branchTo = [&instrs, &numInstrs, &instrIdx](Object targetBB)
-    {
-        //std::cout << "branching" << std::endl;
-
-        if (instrIdx != numInstrs)
-        {
-            throw RunError(
-                "only the last instruction in a block can be a branch ("
-                "instrIdx=" + std::to_string(instrIdx) + ", " +
-                "numInstrs=" + std::to_string(numInstrs) + ")"
-            );
-        }
-
-        static ICache instrsIC("instrs");
-        Array instrArr = instrsIC.getArr(targetBB);
-
-        instrs = (Value)instrArr;
-        numInstrs = instrArr.length();
-        instrIdx = 0;
-
-        if (numInstrs == 0)
-        {
-            throw RunError("target basic block is empty");
-        }
-    };
-
-    // Get the entry block for this function
-    static ICache entryIC("entry");
-    Object entryBB = entryIC.getObj(fun);
-
-    // Branch to the entry block
-    branchTo(entryBB);
-
-    // For each instruction to execute
-    for (;;)
-    {
-        assert (instrIdx < numInstrs);
-
-        //std::cout << "cycleCount=" << cycleCount << std::endl;
-        //std::cout << "instrIdx=" << instrIdx << std::endl;
-
-        Array instrArr = Array(instrs);
-        Value instrVal = instrArr.getElem(instrIdx);
-        assert (instrVal.isObject());
-        auto instr = Object(instrVal);
-
-        cycleCount++;
-        instrIdx++;
-
-        // Get the opcode for this instruction
-        auto op = decode(instr);
-
-        switch (op)
-        {
-            // Read a local variable and push it on the stack
-            case GET_LOCAL:
-            {
-                static ICache icache("idx");
-                auto localIdx = icache.getInt64(instr);
-                //std::cout << "localIdx=" << localIdx << std::endl;
-                assert (localIdx < locals.size());
-                stack.push_back(locals[localIdx]);
-            }
-            break;
-
-            // Set a local variable
-            case SET_LOCAL:
-            {
-                static ICache icache("idx");
-                auto localIdx = icache.getInt64(instr);
-                //std::cout << "localIdx=" << localIdx << std::endl;
-                assert (localIdx < locals.size());
-                locals[localIdx] = popVal();
-            }
-            break;
-
-            // Duplicate the top of the stack
-            case DUP:
-            {
-                static ICache idxIC("idx");
-                auto idx = idxIC.getInt64(instr);
-
-                if (idx >= stack.size())
-                    throw RunError("stack undeflow, invalid index for dup");
-
-                auto val = stack[stack.size() - 1 - idx];
-                stack.push_back(val);
-            }
-            break;
-
-            // Swap the topmost two stack elements
-            case SWAP:
-            {
-                auto v0 = popVal();
-                auto v1 = popVal();
-                stack.push_back(v0);
-                stack.push_back(v1);
-            }
-            break;
-
-            case EQ_I64:
-            {
-                auto arg1 = popInt64();
-                auto arg0 = popInt64();
-                pushBool(arg0 == arg1);
-            }
-            break;
-
-            //
-            // String operations
-            //
-
-            case STR_LEN:
-            {
-                auto str = popStr();
-                stack.push_back(str.length());
-            }
-            break;
-
-            case GET_CHAR:
-            {
-                auto idx = (size_t)popInt64();
-                auto str = popStr();
-
-                if (idx >= str.length())
-                {
-                    throw RunError(
-                        "get_char, index out of bounds"
-                    );
-                }
-
-                auto ch = str[idx];
-
-                // Cache single-character strings
-                if (charStrings[ch] == Value::FALSE)
-                {
-                    char buf[2] = { (char)str[idx], '\0' };
-                    charStrings[ch] = String(buf);
-                }
-
-                stack.push_back(charStrings[ch]);
-            }
-            break;
-
-            case GET_CHAR_CODE:
-            {
-                auto idx = (size_t)popInt64();
-                auto str = popStr();
-
-                if (idx >= str.length())
-                {
-                    throw RunError(
-                        "get_char_code, index out of bounds"
-                    );
-                }
-
-                stack.push_back((int64_t)str[idx]);
-            }
-            break;
-
-            case STR_CAT:
-            {
-                auto a = popStr();
-                auto b = popStr();
-                auto c = String::concat(b, a);
-                stack.push_back(c);
-            }
-            break;
-
-            case EQ_STR:
-            {
-                auto arg1 = popStr();
-                auto arg0 = popStr();
-                pushBool(arg0 == arg1);
-            }
-            break;
-
-            //
-            // Object operations
-            //
-
-            case NEW_OBJECT:
-            {
-                auto capacity = popInt64();
-                auto obj = Object::newObject(capacity);
-                stack.push_back(obj);
-            }
-            break;
-
-            case HAS_FIELD:
-            {
-                auto fieldName = popStr();
-                auto obj = popObj();
-                pushBool(obj.hasField(fieldName));
-            }
-            break;
-
-            case SET_FIELD:
-            {
-                auto val = popVal();
-                auto fieldName = popStr();
-                auto obj = popObj();
-
-                if (!isValidIdent(fieldName))
-                {
-                    throw RunError(
-                        "invalid identifier in set_field \"" +
-                        (std::string)fieldName + "\""
-                    );
-                }
-
-                obj.setField(fieldName, val);
-            }
-            break;
-
-            // This instruction will abort execution if trying to
-            // access a field that is not present on an object.
-            // The running program is responsible for testing that
-            // fields exist before attempting to read them.
-            case GET_FIELD:
-            {
-                auto fieldName = popStr();
-                auto obj = popObj();
-
-                //std::cout << "get " << std::string(fieldName) << std::endl;
-
-                if (!obj.hasField(fieldName))
-                {
-                    throw RunError(
-                        "get_field failed, missing field \"" +
-                        (std::string)fieldName + "\""
-                    );
-                }
-
-                auto val = obj.getField(fieldName);
-                stack.push_back(val);
-            }
-            break;
-
-            case EQ_OBJ:
-            {
-                Value arg1 = popVal();
-                Value arg0 = popVal();
-                pushBool(arg0 == arg1);
-            }
-            break;
-
-            //
-            // Array operations
-            //
-
-            case NEW_ARRAY:
-            {
-                auto len = popInt64();
-                auto array = Array(len);
-                stack.push_back(array);
-            }
-            break;
-
-            case ARRAY_LEN:
-            {
-                auto arr = Array(popVal());
-                stack.push_back(arr.length());
-            }
-            break;
-
-            case ARRAY_PUSH:
-            {
-                auto val = popVal();
-                auto arr = Array(popVal());
-                arr.push(val);
-            }
-            break;
-
-            case SET_ELEM:
-            {
-                auto val = popVal();
-                auto idx = (size_t)popInt64();
-                auto arr = Array(popVal());
-
-                if (idx >= arr.length())
-                {
-                    throw RunError(
-                        "set_elem, index out of bounds"
-                    );
-                }
-
-                arr.setElem(idx, val);
-            }
-            break;
-
-            case GET_ELEM:
-            {
-                auto idx = (size_t)popInt64();
-                auto arr = Array(popVal());
-
-                if (idx >= arr.length())
-                {
-                    throw RunError(
-                        "get_elem, index out of bounds"
-                    );
-                }
-
-                stack.push_back(arr.getElem(idx));
-            }
-            break;
-
-            case EQ_BOOL:
-            {
-                auto arg1 = popBool();
-                auto arg0 = popBool();
-                pushBool(arg0 == arg1);
-            }
-            break;
-
-            // Test if a value has a given tag
-            case HAS_TAG:
-            {
-                auto tag = popVal().getTag();
-                static ICache tagIC("tag");
-                auto tagStr = tagIC.getStr(instr);
-
-                switch (tag)
-                {
-                    case TAG_UNDEF:
-                    pushBool(tagStr == "undef");
-                    break;
-
-                    case TAG_BOOL:
-                    pushBool(tagStr == "bool");
-                    break;
-
-                    case TAG_INT64:
-                    pushBool(tagStr == "int64");
-                    break;
-
-                    case TAG_STRING:
-                    pushBool(tagStr == "string");
-                    break;
-
-                    case TAG_ARRAY:
-                    pushBool(tagStr == "array");
-                    break;
-
-                    case TAG_OBJECT:
-                    pushBool(tagStr == "object");
-                    break;
-
-                    default:
-                    throw RunError(
-                        "unknown value type in has_tag"
-                    );
-                }
-            }
-            break;
-
-            // Regular function call
-            case CALL:
-            {
-                static ICache retToCache("ret_to");
-                static ICache numArgsCache("num_args");
-                auto retToBB = retToCache.getObj(instr);
-                auto numArgs = numArgsCache.getInt64(instr);
-
-                auto callee = popVal();
-
-                if (stack.size() < numArgs)
-                {
-                    throw RunError(
-                        "stack underflow at call"
-                    );
-                }
-
-                // Copy the arguments into a vector
-                ValueVec args;
-                args.resize(numArgs);
-                for (size_t i = 0; i < numArgs; ++i)
-                    args[numArgs - 1 - i] = popVal();
-
-                static ICache numParamsIC("num_params");
-                size_t numParams;
-                if (callee.isObject())
-                {
-                    numParams = numParamsIC.getInt64(callee);
-                }
-                else if (callee.isHostFn())
-                {
-                    auto hostFn = (HostFn*)(callee.getWord().ptr);
-                    numParams = hostFn->getNumParams();
-                }
-                else
-                {
-                    throw RunError("invalid callee at call site");
-                }
-
-                if (numArgs != numParams)
-                {
-                    std::string srcPosStr = (
-                        instr.hasField("src_pos")?
-                        (posToString(instr.getField("src_pos")) + " - "):
-                        std::string("")
-                    );
-
-                    throw RunError(
-                        srcPosStr +
-                        "incorrect argument count in call, received " +
-                        std::to_string(numArgs) +
-                        ", expected " +
-                        std::to_string(numParams)
-                    );
-                }
-
-                Value retVal;
-
-                if (callee.isObject())
-                {
-                    // Perform the call
-                    retVal = call(callee, args);
-                }
-                else if (callee.isHostFn())
-                {
-                    auto hostFn = (HostFn*)(callee.getWord().ptr);
-
-                    // Call the host function
-                    switch (numArgs)
-                    {
-                        case 0:
-                        retVal = hostFn->call0();
-                        break;
-
-                        case 1:
-                        retVal = hostFn->call1(args[0]);
-                        break;
-
-                        case 2:
-                        retVal = hostFn->call2(args[0], args[1]);
-                        break;
-
-                        case 3:
-                        retVal = hostFn->call3(args[0], args[1], args[2]);
-                        break;
-
-                        default:
-                        assert (false);
-                    }
-                }
-
-                // Push the return value on the stack
-                stack.push_back(retVal);
-
-                // Jump to the return basic block
-                branchTo(retToBB);
-            }
-            break;
-
-            case RET:
-            {
-                auto val = stack.back();
-                stack.pop_back();
-                return val;
-            }
-            break;
-
-            case IMPORT:
-            {
-                auto pkgName = popStr();
-                auto pkg = import(pkgName);
-                stack.push_back(pkg);
-            }
-            break;
-
-            case ABORT:
-            {
-                auto errMsg = (std::string)popStr();
-
-                // If a source position was specified
-                if (instr.hasField("src_pos"))
-                {
-                    auto srcPos = instr.getField("src_pos");
-                    std::cout << posToString(srcPos) << " - ";
-                }
-
-                if (errMsg != "")
-                {
-                    std::cout << "aborting execution due to error: ";
-                    std::cout << errMsg << std::endl;
-                }
-                else
-                {
-                    std::cout << "aborting execution due to error" << std::endl;
-                }
-
-                exit(-1);
-            }
-            break;
-
-            default:
-            assert (false && "unhandled op in interpreter");
-        }
-    }
-
-    assert (false);
-}
-*/
-
-/// Initial code heap size in bytes
-const size_t CODE_HEAP_INIT_SIZE = 1 << 20;
-
-/// Initial stack size in words
-const size_t STACK_INIT_SIZE = 1 << 16;
-
 class CodeFragment
 {
 public:
@@ -778,7 +176,11 @@ public:
     }
 };
 
-typedef std::vector<BlockVersion*> VersionList;
+/// Initial code heap size in bytes
+const size_t CODE_HEAP_INIT_SIZE = 1 << 20;
+
+/// Initial stack size in words
+const size_t STACK_INIT_SIZE = 1 << 16;
 
 /// Flat array of bytes into which code gets compiled
 uint8_t* codeHeap = nullptr;
@@ -788,6 +190,8 @@ uint8_t* codeHeapLimit = nullptr;
 
 /// Current allocation pointer in the code heap
 uint8_t* codeHeapAlloc = nullptr;
+
+typedef std::vector<BlockVersion*> VersionList;
 
 /// Map of block objects to lists of versions
 std::unordered_map<refptr, VersionList> versionMap;
@@ -809,6 +213,9 @@ Value* stackPtr = nullptr;
 
 // Current instruction pointer
 uint8_t* instrPtr = nullptr;
+
+/// Cache of all possible one-character string values
+Value charStrings[256];
 
 /// Write a value to the code heap
 template <typename T> void writeCode(T val)
@@ -1026,6 +433,57 @@ void compile(BlockVersion* version)
     version->endPtr = codeHeapAlloc;
 }
 
+// TODO: wrap into function
+/*
+    if (numArgs != numParams)
+    {
+        std::string srcPosStr = (
+            instr.hasField("src_pos")?
+            (posToString(instr.getField("src_pos")) + " - "):
+            std::string("")
+        );
+
+        throw RunError(
+            srcPosStr +
+            "incorrect argument count in call, received " +
+            std::to_string(numArgs) +
+            ", expected " +
+            std::to_string(numParams)
+        );
+    }
+*/
+
+// TODO
+/*
+Value callHostFn(HostFn* hostFn)
+{
+    auto hostFn = (HostFn*)(callee.getWord().ptr);
+
+    // Call the host function
+    switch (numArgs)
+    {
+        case 0:
+        retVal = hostFn->call0();
+        break;
+
+        case 1:
+        retVal = hostFn->call1(args[0]);
+        break;
+
+        case 2:
+        retVal = hostFn->call2(args[0], args[1]);
+        break;
+
+        case 3:
+        retVal = hostFn->call3(args[0], args[1], args[2]);
+        break;
+
+        default:
+        assert (false);
+    }
+}
+*/
+
 /// Start/continue execution beginning at a current instruction
 Value execCode()
 {
@@ -1057,6 +515,30 @@ Value execCode()
             }
             break;
 
+            // Swap the topmost two stack elements
+            case SWAP:
+            {
+                auto v0 = popVal();
+                auto v1 = popVal();
+                pushVal(v0);
+                pushVal(v1);
+            }
+            break;
+
+            // TODO
+            /*
+            // Set a local variable
+            case SET_LOCAL:
+            {
+                static ICache icache("idx");
+                auto localIdx = icache.getInt64(instr);
+                //std::cout << "localIdx=" << localIdx << std::endl;
+                assert (localIdx < locals.size());
+                locals[localIdx] = popVal();
+            }
+            break;
+            */
+
             case GET_LOCAL:
             {
                 // Read the index of the value to push
@@ -1064,6 +546,18 @@ Value execCode()
                 assert (stackPtr > stackLimit);
                 auto val = framePtr[idx];
                 pushVal(val);
+            }
+            break;
+
+            //
+            // Integer operations
+            //
+
+            case ADD_I64:
+            {
+                auto arg1 = popVal();
+                auto arg0 = popVal();
+                pushVal((int64_t)arg0 - (int64_t)arg1);
             }
             break;
 
@@ -1100,6 +594,272 @@ Value execCode()
                 pushVal(boolVal? Value::TRUE : Value::FALSE);
             }
             break;
+
+            //
+            // Misc operations
+            //
+
+            /*
+            case EQ_BOOL:
+            {
+                auto arg1 = popBool();
+                auto arg0 = popBool();
+                pushBool(arg0 == arg1);
+            }
+            break;
+            */
+
+            /*
+            // Test if a value has a given tag
+            case HAS_TAG:
+            {
+                auto tag = popVal().getTag();
+                static ICache tagIC("tag");
+                auto tagStr = tagIC.getStr(instr);
+
+                switch (tag)
+                {
+                    case TAG_UNDEF:
+                    pushBool(tagStr == "undef");
+                    break;
+
+                    case TAG_BOOL:
+                    pushBool(tagStr == "bool");
+                    break;
+
+                    case TAG_INT64:
+                    pushBool(tagStr == "int64");
+                    break;
+
+                    case TAG_STRING:
+                    pushBool(tagStr == "string");
+                    break;
+
+                    case TAG_ARRAY:
+                    pushBool(tagStr == "array");
+                    break;
+
+                    case TAG_OBJECT:
+                    pushBool(tagStr == "object");
+                    break;
+
+                    default:
+                    throw RunError(
+                        "unknown value type in has_tag"
+                    );
+                }
+            }
+            break;
+            */
+
+            //
+            // String operations
+            //
+
+            /*
+            case STR_LEN:
+            {
+                auto str = popStr();
+                stack.push_back(str.length());
+            }
+            break;
+
+            case GET_CHAR:
+            {
+                auto idx = (size_t)popInt64();
+                auto str = popStr();
+
+                if (idx >= str.length())
+                {
+                    throw RunError(
+                        "get_char, index out of bounds"
+                    );
+                }
+
+                auto ch = str[idx];
+
+                // Cache single-character strings
+                if (charStrings[ch] == Value::FALSE)
+                {
+                    char buf[2] = { (char)str[idx], '\0' };
+                    charStrings[ch] = String(buf);
+                }
+
+                stack.push_back(charStrings[ch]);
+            }
+            break;
+
+            case GET_CHAR_CODE:
+            {
+                auto idx = (size_t)popInt64();
+                auto str = popStr();
+
+                if (idx >= str.length())
+                {
+                    throw RunError(
+                        "get_char_code, index out of bounds"
+                    );
+                }
+
+                stack.push_back((int64_t)str[idx]);
+            }
+            break;
+
+            case STR_CAT:
+            {
+                auto a = popStr();
+                auto b = popStr();
+                auto c = String::concat(b, a);
+                stack.push_back(c);
+            }
+            break;
+
+            case EQ_STR:
+            {
+                auto arg1 = popStr();
+                auto arg0 = popStr();
+                pushBool(arg0 == arg1);
+            }
+            break;
+            */
+
+            //
+            // Object operations
+            //
+
+            /*
+            case NEW_OBJECT:
+            {
+                auto capacity = popInt64();
+                auto obj = Object::newObject(capacity);
+                stack.push_back(obj);
+            }
+            break;
+
+            case HAS_FIELD:
+            {
+                auto fieldName = popStr();
+                auto obj = popObj();
+                pushBool(obj.hasField(fieldName));
+            }
+            break;
+
+            case SET_FIELD:
+            {
+                auto val = popVal();
+                auto fieldName = popStr();
+                auto obj = popObj();
+
+                if (!isValidIdent(fieldName))
+                {
+                    throw RunError(
+                        "invalid identifier in set_field \"" +
+                        (std::string)fieldName + "\""
+                    );
+                }
+
+                obj.setField(fieldName, val);
+            }
+            break;
+
+            // This instruction will abort execution if trying to
+            // access a field that is not present on an object.
+            // The running program is responsible for testing that
+            // fields exist before attempting to read them.
+            case GET_FIELD:
+            {
+                auto fieldName = popStr();
+                auto obj = popObj();
+
+                //std::cout << "get " << std::string(fieldName) << std::endl;
+
+                if (!obj.hasField(fieldName))
+                {
+                    throw RunError(
+                        "get_field failed, missing field \"" +
+                        (std::string)fieldName + "\""
+                    );
+                }
+
+                auto val = obj.getField(fieldName);
+                stack.push_back(val);
+            }
+            break;
+
+            case EQ_OBJ:
+            {
+                Value arg1 = popVal();
+                Value arg0 = popVal();
+                pushBool(arg0 == arg1);
+            }
+            break;
+            */
+
+            //
+            // Array operations
+            //
+
+            /*
+            case NEW_ARRAY:
+            {
+                auto len = popInt64();
+                auto array = Array(len);
+                stack.push_back(array);
+            }
+            break;
+
+            case ARRAY_LEN:
+            {
+                auto arr = Array(popVal());
+                stack.push_back(arr.length());
+            }
+            break;
+
+            case ARRAY_PUSH:
+            {
+                auto val = popVal();
+                auto arr = Array(popVal());
+                arr.push(val);
+            }
+            break;
+
+            case SET_ELEM:
+            {
+                auto val = popVal();
+                auto idx = (size_t)popInt64();
+                auto arr = Array(popVal());
+
+                if (idx >= arr.length())
+                {
+                    throw RunError(
+                        "set_elem, index out of bounds"
+                    );
+                }
+
+                arr.setElem(idx, val);
+            }
+            break;
+
+            case GET_ELEM:
+            {
+                auto idx = (size_t)popInt64();
+                auto arr = Array(popVal());
+
+                if (idx >= arr.length())
+                {
+                    throw RunError(
+                        "get_elem, index out of bounds"
+                    );
+                }
+
+                stack.push_back(arr.getElem(idx));
+            }
+            break;
+            */
+
+            //
+            // Branch instructions
+            //
 
             case JUMP_STUB:
             {
@@ -1294,6 +1054,41 @@ Value execCode()
             }
             break;
 
+            /*
+            case IMPORT:
+            {
+                auto pkgName = popStr();
+                auto pkg = import(pkgName);
+                stack.push_back(pkg);
+            }
+            break;
+
+            case ABORT:
+            {
+                auto errMsg = (std::string)popStr();
+
+                // If a source position was specified
+                if (instr.hasField("src_pos"))
+                {
+                    auto srcPos = instr.getField("src_pos");
+                    std::cout << posToString(srcPos) << " - ";
+                }
+
+                if (errMsg != "")
+                {
+                    std::cout << "aborting execution due to error: ";
+                    std::cout << errMsg << std::endl;
+                }
+                else
+                {
+                    std::cout << "aborting execution due to error" << std::endl;
+                }
+
+                exit(-1);
+            }
+            break;
+            */
+
             default:
             assert (false && "unhandled instruction in interpreter loop");
         }
@@ -1384,5 +1179,5 @@ void testInterp()
     assert (testRunImage("tests/vm/ex_loop_cnt.zim") == Value(0));
     //assert (testRunImage("tests/vm/ex_image.zim") == Value(10));
     assert (testRunImage("tests/vm/ex_rec_fact.zim") == Value(5040));
-    //assert (testRunImage("tests/vm/ex_fibonacci.zim") == Value(377));
+    assert (testRunImage("tests/vm/ex_fibonacci.zim") == Value(377));
 }
