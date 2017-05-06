@@ -103,6 +103,11 @@ enum Opcode : uint16_t
     GE_I64,
     EQ_I64,
 
+    // Miscellaneous
+    EQ_BOOL,
+    HAS_TAG,
+    GET_TAG,
+
     // String operations
     STR_LEN,
     GET_CHAR,
@@ -116,11 +121,6 @@ enum Opcode : uint16_t
     SET_FIELD,
     GET_FIELD,
     EQ_OBJ,
-
-    // Miscellaneous
-    EQ_BOOL,
-    HAS_TAG,
-    GET_TAG,
 
     // Array operations
     NEW_ARRAY,
@@ -244,7 +244,7 @@ __attribute__((always_inline)) void pushVal(Value val)
 /// Push a boolean on the stack
 __attribute__((always_inline)) void pushBool(bool val)
 {
-    pushVal(val? Value::TRUE:Value::FALSE);
+    pushVal(val? (Value::TRUE) : (Value::FALSE));
 }
 
 __attribute__((always_inline)) Value popVal()
@@ -407,6 +407,10 @@ void compile(BlockVersion* version)
             continue;
         }
 
+        //
+        // Integer operations
+        //
+
         if (op == "add_i64")
         {
             writeCode(ADD_I64);
@@ -431,21 +435,37 @@ void compile(BlockVersion* version)
             continue;
         }
 
+        if (op == "le_i64")
+        {
+            writeCode(LE_I64);
+            continue;
+        }
+
         if (op == "gt_i64")
         {
             writeCode(GT_I64);
             continue;
         }
 
-        if (op == "jump")
+        if (op == "ge_i64")
         {
-            static ICache toIC("to");
-            auto dstBB = toIC.getObj(instr);
+            writeCode(GE_I64);
+            continue;
+        }
 
-            auto dstVer = getBlockVersion(dstBB);
+        if (op == "eq_i64")
+        {
+            writeCode(EQ_I64);
+            continue;
+        }
 
-            writeCode(JUMP_STUB);
-            writeCode(dstVer);
+        //
+        // Miscellaneous ops
+        //
+
+        if (op == "eq_bool")
+        {
+            writeCode(EQ_BOOL);
             continue;
         }
 
@@ -459,6 +479,44 @@ void compile(BlockVersion* version)
             writeCode(tag);
             continue;
         }
+
+        //
+        // String operations
+        //
+
+        if (op == "str_len")
+        {
+            writeCode(STR_LEN);
+            continue;
+        }
+
+        if (op == "get_char")
+        {
+            writeCode(GET_CHAR);
+            continue;
+        }
+
+        if (op == "get_char_code")
+        {
+            writeCode(GET_CHAR_CODE);
+            continue;
+        }
+
+        if (op == "str_cat")
+        {
+            writeCode(STR_CAT);
+            continue;
+        }
+
+        if (op == "eq_str")
+        {
+            writeCode(EQ_STR);
+            continue;
+        }
+
+        //
+        // Object operations
+        //
 
         if (op == "new_object")
         {
@@ -481,6 +539,22 @@ void compile(BlockVersion* version)
         if (op == "get_field")
         {
             writeCode(GET_FIELD);
+            continue;
+        }
+
+        //
+        // Branch instructions
+        //
+
+        if (op == "jump")
+        {
+            static ICache toIC("to");
+            auto dstBB = toIC.getObj(instr);
+
+            auto dstVer = getBlockVersion(dstBB);
+
+            writeCode(JUMP_STUB);
+            writeCode(dstVer);
             continue;
         }
 
@@ -530,7 +604,11 @@ void compile(BlockVersion* version)
             continue;
         }
 
-        // TODO: abort instruction
+        if (op == "abort")
+        {
+            writeCode(ABORT);
+            continue;
+        }
 
         throw RunError("unhandled opcode in basic block \"" + op + "\"");
     }
@@ -568,7 +646,7 @@ Value execCode()
     // For each instruction to execute
     for (;;)
     {
-        //std::cout << "instr" << std::endl;
+        std::cout << "instr" << std::endl;
 
         auto& op = readCode<Opcode>();
 
@@ -615,7 +693,7 @@ Value execCode()
                 auto localIdx = readCode<uint16_t>();
                 //std::cout << "set localIdx=" << localIdx << std::endl;
                 assert (stackPtr > stackLimit);
-                framePtr[localIdx] = popVal();
+                framePtr[-localIdx] = popVal();
             }
             break;
 
@@ -623,12 +701,12 @@ Value execCode()
             {
                 // Read the index of the value to push
                 auto localIdx = readCode<uint16_t>();
-                //std::cout << "get localIdx=" << localIdx << std::endl;
+                std::cout << "get localIdx=" << localIdx << std::endl;
                 assert (stackPtr > stackLimit);
-                auto val = framePtr[localIdx];
+                auto val = framePtr[-localIdx];
 
-                //if (val.isInt64())
-                //    std::cout << "  " << (int64_t)val << std::endl;
+                if (val.isInt64())
+                    std::cout << "  " << (int64_t)val << std::endl;
 
                 pushVal(val);
             }
@@ -670,11 +748,35 @@ Value execCode()
             }
             break;
 
+            case LE_I64:
+            {
+                auto arg1 = popVal();
+                auto arg0 = popVal();
+                pushBool((int64_t)arg0 <= (int64_t)arg1);
+            }
+            break;
+
             case GT_I64:
             {
                 auto arg1 = popVal();
                 auto arg0 = popVal();
                 pushBool((int64_t)arg0 > (int64_t)arg1);
+            }
+            break;
+
+            case GE_I64:
+            {
+                auto arg1 = popVal();
+                auto arg0 = popVal();
+                pushBool((int64_t)arg0 >= (int64_t)arg1);
+            }
+            break;
+
+            case EQ_I64:
+            {
+                auto arg1 = popVal();
+                auto arg0 = popVal();
+                pushBool((int64_t)arg0 == (int64_t)arg1);
             }
             break;
 
@@ -703,11 +805,10 @@ Value execCode()
             // String operations
             //
 
-            /*
             case STR_LEN:
             {
                 auto str = popStr();
-                stack.push_back(str.length());
+                pushVal(str.length());
             }
             break;
 
@@ -732,7 +833,7 @@ Value execCode()
                     charStrings[ch] = String(buf);
                 }
 
-                stack.push_back(charStrings[ch]);
+                pushVal(charStrings[ch]);
             }
             break;
 
@@ -748,7 +849,7 @@ Value execCode()
                     );
                 }
 
-                stack.push_back((int64_t)str[idx]);
+                pushVal((int64_t)str[idx]);
             }
             break;
 
@@ -757,7 +858,7 @@ Value execCode()
                 auto a = popStr();
                 auto b = popStr();
                 auto c = String::concat(b, a);
-                stack.push_back(c);
+                pushVal(c);
             }
             break;
 
@@ -768,7 +869,6 @@ Value execCode()
                 pushBool(arg0 == arg1);
             }
             break;
-            */
 
             //
             // Object operations
@@ -981,15 +1081,14 @@ Value execCode()
 
                 auto callee = popVal();
 
-                // FIXME
-                /*
-                if (stack.size() < numArgs)
+                //std::cout << "call, numArgs=" << numArgs << std::endl;
+
+                if (stackSize() < numArgs)
                 {
                     throw RunError(
                         "stack underflow at call"
                     );
                 }
-                */
 
                 if (callee.isObject())
                 {
@@ -1015,7 +1114,6 @@ Value execCode()
 
                     // Point the frame pointer to the first argument
                     framePtr = stackPtr + numArgs - 1;
-                    stackPtr = framePtr - numLocals;
                     assert (stackPtr > stackLimit);
                     assert (stackPtr <= framePtr);
 
@@ -1137,17 +1235,19 @@ Value execCode()
             }
             break;
 
-            /*
             case ABORT:
             {
                 auto errMsg = (std::string)popStr();
 
+                // FIXME
+                /*
                 // If a source position was specified
                 if (instr.hasField("src_pos"))
                 {
                     auto srcPos = instr.getField("src_pos");
                     std::cout << posToString(srcPos) << " - ";
                 }
+                */
 
                 if (errMsg != "")
                 {
@@ -1162,7 +1262,6 @@ Value execCode()
                 exit(-1);
             }
             break;
-            */
 
             default:
             assert (false && "unhandled instruction in interpreter loop");
@@ -1195,7 +1294,7 @@ Value callFun(Object fun, ValueVec args)
     for (size_t i = 0; i < args.size(); ++i)
     {
         //std::cout << "  " << args[i].toString() << std::endl;
-        framePtr[i] = args[i];
+        framePtr[-i] = args[i];
     }
 
     // Push the previous stack pointer, previous
@@ -1219,6 +1318,8 @@ Value callFun(Object fun, ValueVec args)
     // Begin execution at the entry block
     instrPtr = entryVer->startPtr;
     auto retVal = execCode();
+
+    std::cout << "Returned from top-level function" << std::endl;
 
     // Pop the local variables
     stackPtr += numLocals;
