@@ -130,7 +130,6 @@ enum Opcode : uint16_t
     SET_ELEM,
 
     // Branch instructions
-    // Note: opcode for stub branches is opcode+1
     JUMP,
     JUMP_STUB,
     IF_TRUE,
@@ -344,6 +343,11 @@ void compile(BlockVersion* version)
     static ICache instrsIC("instrs");
     Array instrs = instrsIC.getArr(block);
 
+    if (instrs.length() == 0)
+    {
+        throw RunError("empty basic block");
+    }
+
     // Mark the block start
     version->startPtr = codeHeapAlloc;
 
@@ -543,6 +547,40 @@ void compile(BlockVersion* version)
         }
 
         //
+        // Array operations
+        //
+
+        if (op == "new_array")
+        {
+            writeCode(NEW_ARRAY);
+            continue;
+        }
+
+        if (op == "array_len")
+        {
+            writeCode(ARRAY_LEN);
+            continue;
+        }
+
+        if (op == "array_push")
+        {
+            writeCode(ARRAY_PUSH);
+            continue;
+        }
+
+        if (op == "set_elem")
+        {
+            writeCode(SET_ELEM);
+            continue;
+        }
+
+        if (op == "get_elem")
+        {
+            writeCode(GET_ELEM);
+            continue;
+        }
+
+        //
         // Branch instructions
         //
 
@@ -646,10 +684,9 @@ Value execCode()
     // For each instruction to execute
     for (;;)
     {
-        std::cout << "instr" << std::endl;
-
         auto& op = readCode<Opcode>();
 
+        //std::cout << "instr" << std::endl;
         //std::cout << "op=" << (int)op << std::endl;
         //std::cout << "  stack space: " << (stackBase - stackPtr) << std::endl;
 
@@ -701,13 +738,9 @@ Value execCode()
             {
                 // Read the index of the value to push
                 auto localIdx = readCode<uint16_t>();
-                std::cout << "get localIdx=" << localIdx << std::endl;
+                //std::cout << "get localIdx=" << localIdx << std::endl;
                 assert (stackPtr > stackLimit);
                 auto val = framePtr[-localIdx];
-
-                if (val.isInt64())
-                    std::cout << "  " << (int64_t)val << std::endl;
-
                 pushVal(val);
             }
             break;
@@ -942,19 +975,18 @@ Value execCode()
             // Array operations
             //
 
-            /*
             case NEW_ARRAY:
             {
                 auto len = popInt64();
                 auto array = Array(len);
-                stack.push_back(array);
+                pushVal(array);
             }
             break;
 
             case ARRAY_LEN:
             {
                 auto arr = Array(popVal());
-                stack.push_back(arr.length());
+                pushVal(arr.length());
             }
             break;
 
@@ -995,10 +1027,9 @@ Value execCode()
                     );
                 }
 
-                stack.push_back(arr.getElem(idx));
+                pushVal(arr.getElem(idx));
             }
             break;
-            */
 
             //
             // Branch instructions
@@ -1189,6 +1220,12 @@ Value execCode()
                 // Pop the return value
                 auto retVal = popVal();
 
+
+
+
+
+
+
                 // Pop the return address
                 auto retVer = (BlockVersion*)popVal().getWord().ptr;
 
@@ -1198,11 +1235,23 @@ Value execCode()
                 // Pop the previous stack pointer
                 auto prevStackPtr = popVal().getWord().ptr;
 
+
+
+
+                std::cout << "stack size before ret: " << stackSize() << std::endl;
+
+
+
                 // Restore the previous frame pointer
                 framePtr = (Value*)prevFramePtr;
 
                 // Restore the stack pointer
                 stackPtr = (Value*)prevStackPtr;
+
+
+                std::cout << "stack size after ret: " << stackSize() << std::endl;
+
+
 
                 // If this is a top-level return
                 if (retVer == nullptr)

@@ -21,6 +21,7 @@ test: zeta cplush plush-pkg cscheme
 	./plush.sh tests/plush/simple_exprs.pls
 	./plush.sh tests/plush/identfn.pls
 	./plush.sh tests/plush/fib.pls
+	./plush.sh tests/plush/for_loop.pls
 	./plush.sh tests/plush/for_loop_sum.pls
 	./plush.sh tests/plush/for_loop_cont.pls
 	./plush.sh tests/plush/for_loop_break.pls
@@ -37,6 +38,7 @@ test: zeta cplush plush-pkg cscheme
 	./$(ZETA_BIN) tests/plush/simple_exprs.pls
 	./$(ZETA_BIN) tests/plush/identfn.pls
 	./$(ZETA_BIN) tests/plush/fib.pls
+	./$(ZETA_BIN) tests/plush/for_loop.pls
 	./$(ZETA_BIN) tests/plush/for_loop_sum.pls
 	./$(ZETA_BIN) tests/plush/for_loop_cont.pls
 	./$(ZETA_BIN) tests/plush/for_loop_break.pls
