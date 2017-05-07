@@ -6,81 +6,6 @@
 #include "interp.h"
 #include "core.h"
 
-/// Inline cache to speed up property lookups
-class ICache
-{
-private:
-
-    // Cached slot index
-    size_t slotIdx = 0;
-
-    // Field name to look up
-    std::string fieldName;
-
-public:
-
-    ICache(std::string fieldName)
-    : fieldName(fieldName)
-    {
-    }
-
-    Value getField(Object obj)
-    {
-        Value val;
-
-        if (!obj.getField(fieldName.c_str(), val, slotIdx))
-        {
-            throw RunError("missing field \"" + fieldName + "\"");
-        }
-
-        return val;
-    }
-
-    int64_t getInt64(Object obj)
-    {
-        auto val = getField(obj);
-        assert (val.isInt64());
-        return (int64_t)val;
-    }
-
-    String getStr(Object obj)
-    {
-        auto val = getField(obj);
-        assert (val.isString());
-        return String(val);
-    }
-
-    Object getObj(Object obj)
-    {
-        auto val = getField(obj);
-        assert (val.isObject());
-        return Object(val);
-    }
-
-    Array getArr(Object obj)
-    {
-        auto val = getField(obj);
-        assert (val.isArray());
-        return Array(val);
-    }
-};
-
-std::string posToString(Value srcPos)
-{
-    assert (srcPos.isObject());
-    auto srcPosObj = (Object)srcPos;
-
-    auto lineNo = (int64_t)srcPosObj.getField("line_no");
-    auto colNo = (int64_t)srcPosObj.getField("col_no");
-    auto srcName = (std::string)srcPosObj.getField("src_name");
-
-    return (
-        srcName + "@" +
-        std::to_string(lineNo) + ":" +
-        std::to_string(colNo)
-    );
-}
-
 /// Opcode enumeration
 enum Opcode : uint16_t
 {
@@ -140,6 +65,65 @@ enum Opcode : uint16_t
     ABORT
 };
 
+/// Inline cache to speed up property lookups
+class ICache
+{
+private:
+
+    // Cached slot index
+    size_t slotIdx = 0;
+
+    // Field name to look up
+    std::string fieldName;
+
+public:
+
+    ICache(std::string fieldName)
+    : fieldName(fieldName)
+    {
+    }
+
+    Value getField(Object obj)
+    {
+        Value val;
+
+        if (!obj.getField(fieldName.c_str(), val, slotIdx))
+        {
+            throw RunError("missing field \"" + fieldName + "\"");
+        }
+
+        return val;
+    }
+
+    int64_t getInt64(Object obj)
+    {
+        auto val = getField(obj);
+        assert (val.isInt64());
+        return (int64_t)val;
+    }
+
+    String getStr(Object obj)
+    {
+        auto val = getField(obj);
+        assert (val.isString());
+        return String(val);
+    }
+
+    Object getObj(Object obj)
+    {
+        auto val = getField(obj);
+        assert (val.isObject());
+        return Object(val);
+    }
+
+    Array getArr(Object obj)
+    {
+        auto val = getField(obj);
+        assert (val.isArray());
+        return Array(val);
+    }
+};
+
 class CodeFragment
 {
 public:
@@ -190,10 +174,13 @@ uint8_t* codeHeapLimit = nullptr;
 /// Current allocation pointer in the code heap
 uint8_t* codeHeapAlloc = nullptr;
 
-typedef std::vector<BlockVersion*> VersionList;
-
 /// Map of block objects to lists of versions
+typedef std::vector<BlockVersion*> VersionList;
 std::unordered_map<refptr, VersionList> versionMap;
+
+/// Map of instructions to block versions
+/// Note: this isn't defined for all instructions
+std::unordered_map<uint8_t*, BlockVersion*> instrMap;
 
 /// Lower stack limit (stack pointer must be greater than this)
 Value* stackLimit = nullptr;
@@ -362,6 +349,9 @@ void compile(BlockVersion* version)
         auto op = (std::string)opIC.getStr(instr);
 
         //std::cout << "op: " << op << std::endl;
+
+        // Store a pointer to the current instruction
+        auto instrPtr = codeHeapAlloc;
 
         if (op == "push")
         {
@@ -621,6 +611,9 @@ void compile(BlockVersion* version)
 
         if (op == "call")
         {
+            // Store a mapping of this instruction to the block version
+            instrMap[instrPtr] = version;
+
             static ICache retToCache("ret_to");
             static ICache numArgsCache("num_args");
             auto numArgs = (int16_t)numArgsCache.getInt64(instr);
@@ -650,6 +643,9 @@ void compile(BlockVersion* version)
 
         if (op == "abort")
         {
+            // Store a mapping of this instruction to the block version
+            instrMap[instrPtr] = version;
+
             writeCode(ABORT);
             continue;
         }
@@ -659,6 +655,36 @@ void compile(BlockVersion* version)
 
     // Mark the block end
     version->endPtr = codeHeapAlloc;
+}
+
+/// Get the source position for a given instruction, if available
+Value getSrcPos(uint8_t* instrPtr)
+{
+    auto itr = instrMap.find(instrPtr);
+    if (itr == instrMap.end())
+    {
+        std::cout << "no instr to block mapping" << std::endl;
+        return Value::UNDEF;
+    }
+
+    auto block = itr->second->block;
+
+    static ICache instrsIC("instrs");
+    Array instrs = instrsIC.getArr(block);
+    assert (instrs.length() > 0);
+
+    // Traverse the instructions in reverse
+    for (int i = (int)instrs.length() - 1; i >= 0; --i)
+    {
+        auto instrVal = instrs.getElem(i);
+        assert (instrVal.isObject());
+        auto instr = Object(instrVal);
+
+        if (instr.hasField("src_pos"))
+            return instr.getField("src_pos");
+    }
+
+    return Value::UNDEF;
 }
 
 // TODO: wrap into function
@@ -680,6 +706,12 @@ void compile(BlockVersion* version)
         );
     }
 */
+
+
+
+
+
+
 
 /// Start/continue execution beginning at a current instruction
 Value execCode()
@@ -1292,15 +1324,9 @@ Value execCode()
             {
                 auto errMsg = (std::string)popStr();
 
-                // FIXME
-                /*
-                // If a source position was specified
-                if (instr.hasField("src_pos"))
-                {
-                    auto srcPos = instr.getField("src_pos");
+                auto srcPos = getSrcPos((uint8_t*)&op);
+                if (srcPos != Value::UNDEF)
                     std::cout << posToString(srcPos) << " - ";
-                }
-                */
 
                 if (errMsg != "")
                 {
