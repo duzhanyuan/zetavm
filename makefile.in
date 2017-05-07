@@ -15,6 +15,7 @@ test: zeta cplush plush-pkg cscheme
 	./$(ZETA_BIN) --test
 	./$(ZETA_BIN) tests/vm/ex_loop_cnt.zim
 	./$(ZETA_BIN) tests/vm/sub_fun.zim
+	./$(ZETA_BIN) tests/vm/fun_no_args.zim
 	# cplush tests
 	./$(CPLUSH_BIN) --test
 	./plush.sh tests/plush/trivial.pls

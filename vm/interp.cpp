@@ -335,7 +335,7 @@ BlockVersion* getBlockVersion(Object block)
 
 void compile(BlockVersion* version)
 {
-    std::cout << "compiling version" << std::endl;
+    //std::cout << "compiling version" << std::endl;
 
     auto block = version->block;
 
@@ -361,7 +361,7 @@ void compile(BlockVersion* version)
         static ICache opIC("op");
         auto op = (std::string)opIC.getStr(instr);
 
-        std::cout << "op: " << op << std::endl;
+        //std::cout << "op: " << op << std::endl;
 
         if (op == "push")
         {
@@ -577,6 +577,12 @@ void compile(BlockVersion* version)
         if (op == "get_elem")
         {
             writeCode(GET_ELEM);
+            continue;
+        }
+
+        if (op == "eq_obj")
+        {
+            writeCode(EQ_OBJ);
             continue;
         }
 
@@ -1039,7 +1045,7 @@ Value execCode()
             {
                 auto& dstAddr = readCode<uint8_t*>();
 
-                std::cout << "Patching jump" << std::endl;
+                //std::cout << "Patching jump" << std::endl;
 
                 auto dstVer = (BlockVersion*)dstAddr;
 
@@ -1073,7 +1079,7 @@ Value execCode()
                 {
                     if (thenAddr < codeHeap || thenAddr >= codeHeapLimit)
                     {
-                        std::cout << "Patching then target" << std::endl;
+                        //std::cout << "Patching then target" << std::endl;
 
                         auto thenVer = (BlockVersion*)thenAddr;
                         if (!thenVer->startPtr)
@@ -1089,7 +1095,7 @@ Value execCode()
                 {
                     if (elseAddr < codeHeap || elseAddr >= codeHeapLimit)
                     {
-                       std::cout << "Patching else target" << std::endl;
+                       //std::cout << "Patching else target" << std::endl;
 
                        auto elseVer = (BlockVersion*)elseAddr;
                        if (!elseVer->startPtr)
@@ -1123,6 +1129,11 @@ Value execCode()
 
                 if (callee.isObject())
                 {
+                    // TODO: we could inline cache some function
+                    // information
+                    // start with map of fn objs to structs
+                    // TODO: move callFn into its own function
+
                     // Get a version for the function entry block
                     static ICache entryIC("entry");
                     auto entryBB = entryIC.getObj(callee);
@@ -1130,12 +1141,27 @@ Value execCode()
 
                     if (!entryVer->startPtr)
                     {
-                        std::cout << "compiling function entry block" << std::endl;
+                        //std::cout << "compiling function entry block" << std::endl;
                         compile(entryVer);
                     }
 
                     static ICache localsIC("num_locals");
                     auto numLocals = localsIC.getInt64(callee);
+
+                    static ICache paramsIC("num_params");
+                    auto numParams = paramsIC.getInt64(callee);
+
+                    if (numLocals < numParams)
+                    {
+                        throw RunError(
+                            "not enough locals to store function parameters"
+                        );
+                    }
+
+                    if (numArgs != numParams)
+                    {
+                        throw RunError("argument count mismatch");
+                    }
 
                     // Compute the stack pointer to restore after the call
                     auto prevStackPtr = stackPtr + numArgs;
@@ -1144,9 +1170,11 @@ Value execCode()
                     auto prevFramePtr = framePtr;
 
                     // Point the frame pointer to the first argument
-                    framePtr = stackPtr + numArgs - 1;
                     assert (stackPtr > stackLimit);
-                    assert (stackPtr <= framePtr);
+                    framePtr = stackPtr + numArgs - 1;
+
+                    // Pop the arguments, push the callee locals
+                    stackPtr -= numLocals - numArgs;
 
                     pushVal(Value((refptr)prevStackPtr, TAG_RAWPTR));
                     pushVal(Value((refptr)prevFramePtr, TAG_RAWPTR));
@@ -1158,7 +1186,6 @@ Value execCode()
                 else if (callee.isHostFn())
                 {
                     auto hostFn = (HostFn*)callee.getWord().ptr;
-                    //std::cout << "calling host fn with, numArgs=" << numArgs << std::endl;
 
                     // Pointer to the first argument
                     auto args = stackPtr + numArgs - 1;
@@ -1220,12 +1247,6 @@ Value execCode()
                 // Pop the return value
                 auto retVal = popVal();
 
-
-
-
-
-
-
                 // Pop the return address
                 auto retVer = (BlockVersion*)popVal().getWord().ptr;
 
@@ -1235,29 +1256,15 @@ Value execCode()
                 // Pop the previous stack pointer
                 auto prevStackPtr = popVal().getWord().ptr;
 
-
-
-
-                std::cout << "stack size before ret: " << stackSize() << std::endl;
-
-
-
                 // Restore the previous frame pointer
                 framePtr = (Value*)prevFramePtr;
 
                 // Restore the stack pointer
                 stackPtr = (Value*)prevStackPtr;
 
-
-                std::cout << "stack size after ret: " << stackSize() << std::endl;
-
-
-
                 // If this is a top-level return
                 if (retVer == nullptr)
                 {
-                    std::cout << "top-level return" << std::endl;
-
                     return retVal;
                 }
                 else
@@ -1266,10 +1273,7 @@ Value execCode()
                     pushVal(retVal);
 
                     if (!retVer->startPtr)
-                    {
-                        std::cout << "compiling call continuation" << std::endl;
                         compile(retVer);
-                    }
 
                     instrPtr = retVer->startPtr;
                 }
@@ -1321,7 +1325,8 @@ Value execCode()
     assert (false);
 }
 
-/// Begin the execution of a function (top-level call)
+/// Begin the execution of a function
+/// Note: this may be indirectly called from within a running interpreter
 Value callFun(Object fun, ValueVec args)
 {
     static ICache numParamsIC("num_params");
@@ -1331,13 +1336,28 @@ Value callFun(Object fun, ValueVec args)
     assert (args.size() <= numParams);
     assert (numParams <= numLocals);
 
+    // Store the stack size before the call
+    auto preCallSz = stackSize();
+
+    // Save the previous instruction pointer
+    pushVal(Value((refptr)instrPtr, TAG_RAWPTR));
+
+    // Save the previous stack and frame pointers
+    auto prevStackPtr = stackPtr;
+    auto prevFramePtr = framePtr;
+
     // Initialize the frame pointer (used to access locals)
-    assert (stackSize() == 0);
     framePtr = stackPtr - 1;
 
     // Push space for the local variables
     stackPtr -= numLocals;
     assert (stackPtr >= stackLimit);
+
+    // Push the previous stack pointer, previous
+    // frame pointer and return address
+    pushVal(Value((refptr)prevStackPtr, TAG_RAWPTR));
+    pushVal(Value((refptr)prevFramePtr, TAG_RAWPTR));
+    pushVal(Value(nullptr, TAG_RAWPTR));
 
     // Copy the arguments into the locals
     for (size_t i = 0; i < args.size(); ++i)
@@ -1346,35 +1366,24 @@ Value callFun(Object fun, ValueVec args)
         framePtr[-i] = args[i];
     }
 
-    // Push the previous stack pointer, previous
-    // frame pointer and return address
-    pushVal(Value((refptr)stackPtr, TAG_RAWPTR));
-    pushVal(Value((refptr)framePtr, TAG_RAWPTR));
-    pushVal(Value(nullptr, TAG_RAWPTR));
-
     // Get the function entry block
     static ICache entryIC("entry");
     auto entryBlock = entryIC.getObj(fun);
-
     auto entryVer = getBlockVersion(entryBlock);
 
     // Generate code for the entry block version
     compile(entryVer);
     assert (entryVer->length() > 0);
 
-    std::cout << "Starting top-level unit execution" << std::endl;
-
     // Begin execution at the entry block
     instrPtr = entryVer->startPtr;
     auto retVal = execCode();
 
-    std::cout << "Returned from top-level function" << std::endl;
+    // Restore the previous instruction pointer
+    instrPtr = (uint8_t*)popVal().getWord().ptr;
 
-    // Pop the local variables
-    stackPtr += numLocals;
-
-    // Check that the stack is empty
-    assert (stackSize() == 0);
+    // Check that the stack size matches what it was before the call
+    assert (stackSize() == preCallSz);
 
     return retVal;
 }
